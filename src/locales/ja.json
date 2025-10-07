@@ -26,15 +26,22 @@
     "created": "作成日",
     "size": "サイズ",
     "bytes": "バイト",
+    "storageLocation": "保存先",
+    "locationLocal": "ローカルのみ",
+    "locationSynced": "ローカル + {{provider}}",
     "load": "読み込み",
     "delete": "削除",
-    "dropbox": {
-      "title": "Dropbox 同期",
-      "statusConnected": "Dropbox に接続されています",
-      "statusNotConnected": "Dropbox に接続されていません",
-      "connect": "Dropbox に接続",
-      "disconnect": "接続を解除",
-      "unavailable": "Dropbox 連携が構成されていません。アプリキーを追加してください。"
+    "cloud": {
+      "title": "クラウド同期",
+      "description": "対応するクラウドストレージにファイルを同期できます。",
+      "providerLabel": "クラウドプロバイダ",
+      "localOnlyOption": "ローカルのみ",
+      "statusConnected": "{{provider}} に接続されています",
+      "statusNotConnected": "{{provider}} に接続されていません",
+      "connectButton": "{{provider}} に接続",
+      "disconnectButton": "{{provider}} の接続を解除",
+      "unavailable": "{{provider}} 連携が構成されていません。認証情報を追加してください。",
+      "noneConfigured": "クラウドストレージが構成されていません。ファイルはこのデバイスに保存されます。"
     },
     "confirmDeleteTitle": "ファイルを削除",
     "confirmDeleteMessage": "\"{{filename}}\"を削除してもよろしいですか？この操作は取り消すことができません。",
@@ -45,6 +52,10 @@
     "confirmButton": "削除",
     "cancelButton": "キャンセル",
     "overwriteButton": "上書き",
+    "cloudConflictTitle": "{{provider}} の競合を解決",
+    "cloudConflictMessage": "\"{{filename}}\" はローカルにのみ存在します。{{provider}} にアップロードしますか？それともローカルのコピーを削除しますか？",
+    "cloudConflictUploadButton": "{{provider}} にアップロード",
+    "cloudConflictDiscardButton": "ローカルコピーを削除",
     "validation": {
       "filenameRequired": "ファイル名と内容の両方を入力してください",
       "fileSaved": "ファイル \"{{filename}}\" が正常に保存されました",
@@ -56,10 +67,21 @@
       "errorLoadingFile": "ファイルの読み込みエラー",
       "errorDeleting": "ファイルの削除エラー",
       "errorClearing": "ファイルの削除エラー",
-      "dropboxUploadFailed": "ファイルはローカルに保存されましたが、Dropbox への同期に失敗しました: {{message}}",
-      "dropboxConnected": "Dropbox への接続が完了しました",
-      "dropboxDisconnected": "Dropbox との接続を解除しました",
-      "dropboxAuthFailed": "Dropbox の認証に失敗しました: {{message}}"
+      "cloudUploadFailed": "ファイルはローカルに保存されましたが、{{provider}} への同期に失敗しました: {{message}}",
+      "cloudUploadFailedDefault": "{{provider}} へのアップロードに失敗しました",
+      "cloudConflictUploaded": "\"{{filename}}\" を {{provider}} にアップロードしました",
+      "cloudConflictDiscarded": "\"{{filename}}\" のローカルコピーを削除しました",
+      "cloudDiscardFailed": "ファイルを削除できませんでした: {{message}}",
+      "cloudDiscardFailedDefault": "ローカルコピーの削除に失敗しました",
+      "cloudConnected": "{{provider}} への接続が完了しました",
+      "cloudDisconnected": "{{provider}} との接続を解除しました",
+      "cloudAuthFailed": "{{provider}} の認証に失敗しました: {{message}}",
+      "cloudAuthFailedDefault": "認証に失敗しました"
     }
+  },
+  "providers": {
+    "dropbox": "Dropbox",
+    "googleDrive": "Google ドライブ",
+    "none": "ローカルのみ"
   }
 }

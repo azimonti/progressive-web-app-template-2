@@ -19,7 +19,7 @@ i18n
   .use(initReactI18next)
   .init({
     resources,
-    lng: 'ja',
+    lng: undefined, // Let detection determine the language
     fallbackLng: 'ja',
     defaultNS: 'translation',
 
@@ -28,8 +28,9 @@ i18n
     },
 
     detection: {
-      order: ['localStorage', 'navigator', 'htmlTag'],
+      order: ['localStorage', 'querystring', 'htmlTag'],
       lookupLocalStorage: 'i18nextLng',
+      lookupQuerystring: 'locale',
       caches: ['localStorage']
     }
   });

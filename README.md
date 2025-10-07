@@ -25,7 +25,14 @@ Designed for fast startup, clean structure, and zero config overhead — ideal f
 - 🧱 TypeScript-first React components
 - 🔥 Hot Module Replacement (HMR) out of the box
 - 🧼 Clean, flat project structure (no unnecessary scaffolding)
-- ☁️ Optional Dropbox sync for saved files (configure with access token)
+- ✨ **Font Awesome** icons ready to use across the UI (brands + solid packs)
+- ☁️ **Full cloud storage integration** with Dropbox and Google Drive
+  - 🔐 Secure OAuth authentication (PKCE for Dropbox, Google Identity Services for Drive)
+  - 🔄 Automatic file synchronization between local and cloud storage
+  - ⚖️ Intelligent conflict resolution for local vs. remote files
+  - 📊 Storage quota management (5MB per file, 50MB total)
+  - 🔁 Token refresh and persistent authentication
+  - 🌐 Cross-platform file access and backup
 
 ---
 
@@ -47,24 +54,40 @@ pnpm preview
 
 Open [http://localhost:5173](http://localhost:5173) in your browser.
 
-### Optional: Dropbox Cloud Sync
+### UI Icons with Font Awesome
+
+- Font Awesome core is configured in `src/main.tsx` (`config.autoAddCss = false`) and styles are imported once via `@fortawesome/fontawesome-svg-core/styles.css`.
+- Import icons directly where they are used, e.g.
+
+  ```tsx
+  import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+  import { faDropbox } from '@fortawesome/free-brands-svg-icons';
+
+  <FontAwesomeIcon icon={faDropbox} className="h-5 w-5 text-sky-500" />
+  ```
+
+- The template already uses brand icons for the cloud provider dropdown and solid icons for toast notifications and chevrons. Add additional icons on a per-component basis—no central icon registry is necessary.
+
+### Optional: Cloud Sync
+
+The template can mirror saved files to a cloud provider. Once configured, use the dropdown in the UI to choose Dropbox or Google Drive and connect.
+
+#### Dropbox
 
 1. Create a scoped Dropbox app in the [Dropbox App Console](https://www.dropbox.com/developers/apps) requesting these permissions: `files.metadata.read`, `files.metadata.write`, `files.content.read`, `files.content.write`.
 2. Add your development URL (e.g. `http://localhost:5173/`) to the app's redirect URIs.
-3. Create a `.env` file in the project root and add:
+3. Open `src/services/CloudConfig.ts` and set `DROPBOX_APP_KEY` to your Dropbox app key.
+4. Start the app (`pnpm dev`) and click **Connect Dropbox** to complete the OAuth flow. The redirect URI automatically matches the current origin (e.g. `http://localhost:5173/` or your production URL), so make sure each is added to your Dropbox app configuration.
 
-   ```env
-   VITE_DROPBOX_APP_KEY=your_app_key_here
-   VITE_DROPBOX_REDIRECT_URI=http://localhost:5173/
-   # Optional: customise the folder inside your Dropbox app folder (defaults to /DropboxSync)
-   VITE_DROPBOX_BASE_PATH=/YourFolder
-   # Optional: override the scopes that are requested during OAuth (space-separated)
-   VITE_DROPBOX_SCOPES=files.metadata.read files.metadata.write files.content.read files.content.write
-   ```
+#### Google Drive
 
-4. Start the app (`pnpm dev`) and click **Connect Dropbox** in the UI to complete the OAuth flow.
+1. Create or reuse a Google Cloud project and [enable the Drive API](https://console.cloud.google.com/apis/library/drive.googleapis.com).
+2. Configure an OAuth 2.0 **Web application** client ID in the Google Cloud Console. Add your dev and production URLs (e.g. `http://localhost:5173/`) to **Authorized JavaScript origins** and **Authorized redirect URIs**.
+3. Open `src/services/CloudConfig.ts` and set `GOOGLE_DRIVE_CLIENT_ID` to your Google OAuth client ID.
+4. (Optional) Adjust `GOOGLE_DRIVE_FOLDER_NAME` in the same file if you want a different target folder.
+5. Start the app (`pnpm dev`) and click **Connect Google Drive**. Sign in with an account that has access to the Drive API for the project.
 
-Once connected, saving or deleting files mirrors the changes in Dropbox.
+Synced files are created inside a Drive folder named after `GOOGLE_DRIVE_FOLDER_NAME` (defaults to `pwa-template`) at the root of the user's Drive, so they can be managed manually if needed.
 
 ---
 
@@ -75,12 +98,44 @@ Once connected, saving or deleting files mirrors the changes in Dropbox.
 ├── index.html
 ├── postcss.config.js
 ├── tsconfig.json
+├── tsconfig.app.json
+├── tsconfig.node.json
 ├── vite.config.ts
+├── eslint.config.js
+├── firebase.json
+├── .firebaserc
+├── public/
+│   ├── manifest.webmanifest
+│   ├── sw.js
+│   └── img/
+│       ├── social-card.jpg
+│       └── icons/
+│           ├── pwa-template-32x32.png
+│           ├── pwa-template-180x180.png
+│           ├── pwa-template-192x192.png
+│           ├── pwa-template-512x512-maskable.png
+│           ├── pwa-template-512x512.png
+│           └── pwa-template.ico
 ├── src/
 │   ├── App.tsx
 │   ├── main.tsx
 │   ├── index.css
-│   └── assets/
+│   ├── i18n.ts
+│   ├── components/
+│   │   ├── ConfirmationDialog.tsx
+│   │   ├── LanguageSwitcher.tsx
+│   │   └── Toast.tsx
+│   ├── locales/
+│   │   ├── en.json
+│   │   └── ja.json
+│   └── services/
+│       ├── CloudConfig.ts
+│       ├── CloudStorage.ts
+│       ├── DropboxAuthService.ts
+│       ├── DropboxStorageService.ts
+│       ├── FileStorageService.ts
+│       ├── GoogleDriveAuthService.ts
+│       └── GoogleDriveStorageService.ts
 └── package.json
 ```
 

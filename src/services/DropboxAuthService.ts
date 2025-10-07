@@ -1,4 +1,5 @@
 import { DropboxAuth } from 'dropbox';
+import { DROPBOX_APP_KEY } from './CloudConfig';
 
 const TOKEN_STORAGE_KEY = 'dropbox_token';
 const STATE_STORAGE_KEY = 'dropbox_auth_state';
@@ -20,12 +21,10 @@ export type DropboxRedirectResult =
  */
 export class DropboxAuthService {
   private readonly appKey: string | undefined;
-  private readonly redirectUri: string | undefined;
   private auth: DropboxAuth | null = null;
 
   constructor() {
-    this.appKey = import.meta.env.VITE_DROPBOX_APP_KEY;
-    this.redirectUri = import.meta.env.VITE_DROPBOX_REDIRECT_URI;
+    this.appKey = DROPBOX_APP_KEY;
   }
 
   hasAppKey(): boolean {
@@ -132,19 +131,15 @@ export class DropboxAuthService {
       auth.setCodeVerifier(codeVerifier);
       const redirectUri = this.getResolvedRedirectUri();
       const response = await auth.getAccessTokenFromCode(redirectUri, code);
-      const result = response.result;
-
-      const accessToken = result.access_token;
-      const refreshToken = result.refresh_token ?? null;
-      const expiresIn = Number.parseInt(String(result.expires_in ?? ''), 10);
-      const expiresAt = Number.isFinite(expiresIn) ? Date.now() + expiresIn * 1000 : null;
+      const { accessToken, refreshToken, expiresIn } = this.parseTokenExchangeResult(response.result);
+      const expiresAt = typeof expiresIn === 'number' ? Date.now() + expiresIn * 1000 : null;
 
       this.storeToken({ accessToken, refreshToken, expiresAt });
       auth.setAccessToken(accessToken);
       if (refreshToken) {
         auth.setRefreshToken(refreshToken);
       }
-      if (Number.isFinite(expiresIn)) {
+      if (typeof expiresIn === 'number') {
         auth.setAccessTokenExpiresAt(new Date(Date.now() + expiresIn * 1000));
       }
 
@@ -183,20 +178,26 @@ export class DropboxAuthService {
     try {
       const codeVerifier = this.generateCodeVerifier();
       window.sessionStorage.setItem(CODE_VERIFIER_STORAGE_KEY, codeVerifier);
-      const codeChallenge = await this.generateCodeChallenge(codeVerifier);
+      const { challenge, method } = await this.createPkceChallenge(codeVerifier);
       const redirectUri = this.getResolvedRedirectUri();
+      const scopes = [
+        'files.content.read',
+        'files.content.write',
+        'files.metadata.read'
+      ].join(' ');
 
       const params = new URLSearchParams({
         client_id: this.appKey!,
         response_type: 'code',
         redirect_uri: redirectUri,
-        code_challenge: codeChallenge,
-        code_challenge_method: 'S256',
+        code_challenge: challenge,
+        code_challenge_method: method,
         token_access_type: 'offline',
         include_granted_scopes: 'user'
       });
 
       params.set('state', state);
+      params.set('scope', scopes);
 
       window.location.href = `https://www.dropbox.com/oauth2/authorize?${params.toString()}`;
     } catch (error) {
@@ -234,15 +235,12 @@ export class DropboxAuthService {
   }
 
   private getResolvedRedirectUri(): string {
-    if (this.redirectUri) {
-      return this.redirectUri;
-    }
-
     if (typeof window !== 'undefined') {
-      return `${window.location.origin}/`;
+      const { origin, pathname } = window.location;
+      return `${origin}${pathname}`;
     }
 
-    return '/';
+    return 'http://localhost:5173/';
   }
 
   private removeAuthQueryParams(pathname: string, params: URLSearchParams): void {
@@ -277,9 +275,25 @@ export class DropboxAuthService {
     return fallback;
   }
 
-  private async generateCodeChallenge(verifier: string): Promise<string> {
-    const hashed = await this.sha256(verifier);
-    return this.base64UrlEncode(hashed);
+  private async createPkceChallenge(
+    verifier: string
+  ): Promise<{ challenge: string; method: 'S256' | 'plain' }> {
+    if (this.canUseS256()) {
+      try {
+        const hashed = await this.sha256(verifier);
+        return {
+          challenge: this.base64UrlEncode(hashed),
+          method: 'S256'
+        };
+      } catch (error) {
+        console.warn('Falling back to plain PKCE challenge after digest failure:', error);
+      }
+    }
+
+    return {
+      challenge: verifier,
+      method: 'plain'
+    };
   }
 
   private async sha256(plain: string): Promise<ArrayBuffer> {
@@ -291,6 +305,15 @@ export class DropboxAuthService {
     return window.crypto.subtle.digest('SHA-256', data);
   }
 
+  private canUseS256(): boolean {
+    return (
+      typeof window !== 'undefined' &&
+      Boolean(window.crypto) &&
+      Boolean(window.crypto.subtle) &&
+      typeof window.crypto.subtle.digest === 'function'
+    );
+  }
+
   private base64UrlEncode(buffer: ArrayBuffer): string {
     const bytes = new Uint8Array(buffer);
     let binary = '';
@@ -298,5 +321,40 @@ export class DropboxAuthService {
       binary += String.fromCharCode(bytes[i]);
     }
     return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  private parseTokenExchangeResult(result: unknown): {
+    accessToken: string;
+    refreshToken: string | null;
+    expiresIn: number | null;
+  } {
+    if (!result || typeof result !== 'object') {
+      throw new Error('Invalid Dropbox token response.');
+    }
+
+    const data = result as Record<string, unknown>;
+    const accessToken = data.access_token;
+    if (typeof accessToken !== 'string' || !accessToken) {
+      throw new Error('Dropbox token response is missing an access token.');
+    }
+
+    const refreshCandidate = data.refresh_token;
+    const refreshToken =
+      typeof refreshCandidate === 'string' && refreshCandidate.trim().length > 0
+        ? refreshCandidate
+        : null;
+
+    const expiresCandidate = data.expires_in;
+    let expiresIn: number | null = null;
+    if (typeof expiresCandidate === 'number' && Number.isFinite(expiresCandidate)) {
+      expiresIn = expiresCandidate;
+    } else if (typeof expiresCandidate === 'string') {
+      const parsed = Number.parseInt(expiresCandidate, 10);
+      if (Number.isFinite(parsed)) {
+        expiresIn = parsed;
+      }
+    }
+
+    return { accessToken, refreshToken, expiresIn };
   }
 }

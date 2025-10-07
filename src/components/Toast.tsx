@@ -1,4 +1,12 @@
 import { useEffect } from 'react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import {
+  faCircleCheck,
+  faCircleInfo,
+  faCircleXmark,
+  faTriangleExclamation,
+  faXmark
+} from '@fortawesome/free-solid-svg-icons';
 
 interface ToastProps {
   message: string;
@@ -31,25 +39,26 @@ export default function Toast({
     info: 'bg-blue-500 border-blue-600'
   };
 
-  const iconStyles = {
-    success: '✓',
-    error: '✕',
-    warning: '⚠',
-    info: 'ℹ'
+  const typeIcons = {
+    success: faCircleCheck,
+    error: faCircleXmark,
+    warning: faTriangleExclamation,
+    info: faCircleInfo
   };
 
   return (
     <div className={`fixed top-4 right-4 z-50 max-w-sm w-full ${typeStyles[type]} border-l-4 text-white p-4 rounded-md shadow-lg`}>
       <div className="flex items-center">
-        <span className="text-lg mr-3">{iconStyles[type]}</span>
+        <FontAwesomeIcon icon={typeIcons[type]} className="text-lg mr-3" />
         <p className="flex-1 text-sm font-medium">
           {message}
         </p>
         <button
           onClick={onClose}
           className="ml-3 text-white hover:text-gray-200 focus:outline-none focus:text-gray-200"
+          aria-label="Close notification"
         >
-          ×
+          <FontAwesomeIcon icon={faXmark} className="text-base" />
         </button>
       </div>
     </div>

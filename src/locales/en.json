@@ -26,15 +26,22 @@
     "created": "Created",
     "size": "Size",
     "bytes": "bytes",
+    "storageLocation": "Storage",
+    "locationLocal": "Local only",
+    "locationSynced": "Local + {{provider}}",
     "load": "Load",
     "delete": "Delete",
-    "dropbox": {
-      "title": "Dropbox Sync",
-      "statusConnected": "Connected to Dropbox",
-      "statusNotConnected": "Not connected to Dropbox",
-      "connect": "Connect Dropbox",
-      "disconnect": "Disconnect",
-      "unavailable": "Dropbox integration is not configured. Add your app key to enable it."
+    "cloud": {
+      "title": "Cloud Sync",
+      "description": "Optionally mirror your files to a supported cloud storage provider.",
+      "providerLabel": "Cloud provider",
+      "localOnlyOption": "Local only",
+      "statusConnected": "Connected to {{provider}}",
+      "statusNotConnected": "Not connected to {{provider}}",
+      "connectButton": "Connect {{provider}}",
+      "disconnectButton": "Disconnect {{provider}}",
+      "unavailable": "{{provider}} integration is not configured. Add credentials to enable it.",
+      "noneConfigured": "No cloud storage providers are configured. Files remain on this device."
     },
     "confirmDeleteTitle": "Delete File",
     "confirmDeleteMessage": "Are you sure you want to delete \"{{filename}}\"? This action cannot be undone.",
@@ -45,6 +52,10 @@
     "confirmButton": "Delete",
     "cancelButton": "Cancel",
     "overwriteButton": "Overwrite",
+    "cloudConflictTitle": "Resolve {{provider}} Conflict",
+    "cloudConflictMessage": "The file \"{{filename}}\" exists only locally. Upload it to {{provider}} or discard the local copy?",
+    "cloudConflictUploadButton": "Upload to {{provider}}",
+    "cloudConflictDiscardButton": "Discard Local Copy",
     "validation": {
       "filenameRequired": "Please provide both filename and content",
       "fileSaved": "File \"{{filename}}\" saved successfully",
@@ -56,10 +67,21 @@
       "errorLoadingFile": "Error loading file",
       "errorDeleting": "Error deleting file",
       "errorClearing": "Error clearing files",
-      "dropboxUploadFailed": "File saved locally but Dropbox sync failed: {{message}}",
-      "dropboxConnected": "Dropbox connected successfully",
-      "dropboxDisconnected": "Dropbox disconnected",
-      "dropboxAuthFailed": "Dropbox authorization failed: {{message}}"
+      "cloudUploadFailed": "File saved locally but {{provider}} sync failed: {{message}}",
+      "cloudUploadFailedDefault": "{{provider}} upload failed",
+      "cloudConflictUploaded": "Uploaded \"{{filename}}\" to {{provider}}",
+      "cloudConflictDiscarded": "Discarded local copy of \"{{filename}}\"",
+      "cloudDiscardFailed": "Unable to discard file: {{message}}",
+      "cloudDiscardFailedDefault": "Failed to discard local copy",
+      "cloudConnected": "Connected to {{provider}} successfully",
+      "cloudDisconnected": "{{provider}} disconnected",
+      "cloudAuthFailed": "{{provider}} authorization failed: {{message}}",
+      "cloudAuthFailedDefault": "Authorization failed"
     }
+  },
+  "providers": {
+    "dropbox": "Dropbox",
+    "googleDrive": "Google Drive",
+    "none": "Local only"
   }
 }

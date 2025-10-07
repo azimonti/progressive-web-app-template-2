@@ -1,23 +1,22 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useTranslation } from "react-i18next";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { faChevronDown, faHardDrive } from "@fortawesome/free-solid-svg-icons";
+import { faDropbox, faGoogleDrive } from "@fortawesome/free-brands-svg-icons";
 import LanguageSwitcher from "./components/LanguageSwitcher";
-import { FileStorageService } from "./services/FileStorageService";
+import { FileStorageService, type StoredFile } from "./services/FileStorageService";
+import { CloudSyncError, type CloudProvider } from "./services/CloudStorage";
 import { DropboxAuthService } from "./services/DropboxAuthService";
-import { DropboxStorageService, DropboxSyncError } from "./services/DropboxStorageService";
+import { DropboxStorageService } from "./services/DropboxStorageService";
+import { GoogleDriveAuthService } from "./services/GoogleDriveAuthService";
+import { GoogleDriveStorageService } from "./services/GoogleDriveStorageService";
 import ConfirmationDialog from "./components/ConfirmationDialog";
 import Toast from "./components/Toast";
 
-interface SavedFile {
-  id: string;
-  name: string;
-  content: string;
-  createdAt: string;
-  size: number;
-}
-
 export default function App() {
   const { t } = useTranslation();
-  const [savedFiles, setSavedFiles] = useState<SavedFile[]>([]);
+  const [savedFiles, setSavedFiles] = useState<StoredFile[]>([]);
+  const [conflictQueue, setConflictQueue] = useState<StoredFile[]>([]);
   const [currentContent, setCurrentContent] = useState("");
   const [fileName, setFileName] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -39,28 +38,215 @@ export default function App() {
     title: string;
     message: string;
     type: 'danger' | 'warning' | 'info';
-    onConfirm: () => void;
+    confirmText?: string;
+    cancelText?: string;
+    onConfirm?: () => void;
+    onCancel?: () => void;
   }>({
     isOpen: false,
     title: '',
     message: '',
     type: 'danger',
-    onConfirm: () => {}
+    onConfirm: undefined,
+    onCancel: undefined
   });
 
   const dropboxAuth = useMemo(() => new DropboxAuthService(), []);
   const dropboxStorage = useMemo(() => new DropboxStorageService(dropboxAuth), [dropboxAuth]);
-  const fileStorage = useMemo(() => new FileStorageService(dropboxStorage), [dropboxStorage]);
-  const isDropboxAvailable = dropboxStorage.isAvailable();
+  const googleAuth = useMemo(() => new GoogleDriveAuthService(), []);
+  const googleStorage = useMemo(() => new GoogleDriveStorageService(googleAuth), [googleAuth]);
+  const fileStorage = useMemo(() => new FileStorageService(), []);
+
+  const [activeProvider, setActiveProvider] = useState<CloudProvider | null>(() => {
+    if (googleStorage.isReady()) {
+      return 'googleDrive';
+    }
+    if (dropboxStorage.isReady()) {
+      return 'dropbox';
+    }
+    if (googleStorage.isAvailable()) {
+      return 'googleDrive';
+    }
+    if (dropboxStorage.isAvailable()) {
+      return 'dropbox';
+    }
+    return null;
+  });
   const [isDropboxConnected, setIsDropboxConnected] = useState(dropboxStorage.isReady());
+  const [isGoogleConnected, setIsGoogleConnected] = useState(googleStorage.isReady());
 
   // Helper functions for toast and confirmation
-  const showToast = (message: string, type: 'success' | 'error' | 'warning' | 'info') => {
+  const showToast = useCallback((message: string, type: 'success' | 'error' | 'warning' | 'info') => {
     setToast({ message, type, isVisible: true });
+  }, []);
+
+  const showConfirmationDialog = (
+    title: string,
+    message: string,
+    type: 'danger' | 'warning' | 'info',
+    onConfirm: () => void,
+    options?: {
+      confirmText?: string;
+      cancelText?: string;
+      onCancel?: () => void;
+    }
+  ) => {
+    setConfirmationDialog({
+      isOpen: true,
+      title,
+      message,
+      type,
+      confirmText: options?.confirmText,
+      cancelText: options?.cancelText,
+      onConfirm,
+      onCancel: options?.onCancel
+    });
   };
 
+  const hasDropbox = dropboxStorage.isAvailable();
+  const hasGoogleDrive = googleStorage.isAvailable();
+
+  const activeStorage = useMemo(() => {
+    if (activeProvider === 'dropbox') {
+      return dropboxStorage;
+    }
+    if (activeProvider === 'googleDrive') {
+      return googleStorage;
+    }
+    return null;
+  }, [activeProvider, dropboxStorage, googleStorage]);
+
   useEffect(() => {
-    if (!isDropboxAvailable) {
+    fileStorage.setCloudStorage(activeStorage ?? undefined);
+  }, [fileStorage, activeStorage]);
+
+  const resolveProviderName = useCallback((provider: CloudProvider | null) => {
+    if (!provider) {
+      return t('providers.none');
+    }
+    return t(`providers.${provider}`);
+  }, [t]);
+
+  const refreshConnectionStates = useCallback(() => {
+    setIsDropboxConnected(dropboxStorage.isReady());
+    setIsGoogleConnected(googleStorage.isReady());
+  }, [dropboxStorage, googleStorage]);
+
+  useEffect(() => {
+    const dropboxAvailable = hasDropbox;
+    const googleAvailable = hasGoogleDrive;
+
+    if (activeProvider === 'dropbox' && !dropboxAvailable) {
+      setActiveProvider(googleAvailable ? 'googleDrive' : null);
+    } else if (activeProvider === 'googleDrive' && !googleAvailable) {
+      setActiveProvider(dropboxAvailable ? 'dropbox' : null);
+    }
+  }, [activeProvider, hasDropbox, hasGoogleDrive]);
+
+  const isActiveProviderConnected = activeProvider === 'dropbox'
+    ? isDropboxConnected
+    : activeProvider === 'googleDrive'
+      ? isGoogleConnected
+      : false;
+  const activeProviderLabel = resolveProviderName(activeProvider);
+  const selectedProviderIcon = activeProvider === 'dropbox'
+    ? faDropbox
+    : activeProvider === 'googleDrive'
+      ? faGoogleDrive
+      : faHardDrive;
+  const selectedProviderIconClass = activeProvider === 'dropbox'
+    ? 'text-sky-500'
+    : activeProvider === 'googleDrive'
+      ? 'text-emerald-500'
+      : 'text-slate-400';
+
+  const loadSavedFiles = useCallback(async () => {
+    try {
+      const { files, conflicts } = await fileStorage.listFiles();
+      setSavedFiles(files);
+      setConflictQueue(conflicts);
+    } catch (error) {
+      console.error("Error loading files:", error);
+      showToast(t('fileEditor.validation.errorLoading'), "error");
+    }
+  }, [fileStorage, showToast, t]);
+
+  const handleConflictUpload = useCallback(async (file: StoredFile) => {
+    setConflictQueue(prev => prev.filter(conflict => conflict.id !== file.id));
+    setIsLoading(true);
+    try {
+      await fileStorage.uploadLocalOnlyFile(file);
+      const providerLabel = resolveProviderName(activeStorage?.provider ?? activeProvider);
+      showToast(
+        t('fileEditor.validation.cloudConflictUploaded', {
+          filename: file.name,
+          provider: providerLabel
+        }),
+        'success'
+      );
+    } catch (error) {
+      const providerLabel = resolveProviderName(activeStorage?.provider ?? activeProvider);
+      console.error('Failed to upload local-only file to cloud storage:', error);
+      const message = error instanceof Error
+        ? error.message
+        : t('fileEditor.validation.cloudUploadFailedDefault', {
+          provider: providerLabel
+        });
+      showToast(
+        t('fileEditor.validation.cloudUploadFailed', {
+          message,
+          provider: providerLabel
+        }),
+        'error'
+      );
+    } finally {
+      try {
+        await loadSavedFiles();
+      } finally {
+        setIsLoading(false);
+      }
+    }
+  }, [fileStorage, loadSavedFiles, showToast, t]);
+
+  const handleConflictDiscard = useCallback(async (file: StoredFile) => {
+    setConflictQueue(prev => prev.filter(conflict => conflict.id !== file.id));
+    setIsLoading(true);
+    try {
+      fileStorage.discardLocalOnlyFile(file.name);
+      const providerLabel = resolveProviderName(activeStorage?.provider ?? activeProvider);
+      showToast(
+        t('fileEditor.validation.cloudConflictDiscarded', {
+          filename: file.name,
+          provider: providerLabel
+        }),
+        'info'
+      );
+    } catch (error) {
+      const providerLabel = resolveProviderName(activeStorage?.provider ?? activeProvider);
+      console.error('Failed to discard local-only file:', error);
+      const message = error instanceof Error
+        ? error.message
+        : t('fileEditor.validation.cloudDiscardFailedDefault', {
+          provider: providerLabel
+        });
+      showToast(
+        t('fileEditor.validation.cloudDiscardFailed', {
+          message,
+          provider: providerLabel
+        }),
+        'error'
+      );
+    } finally {
+      try {
+        await loadSavedFiles();
+      } finally {
+        setIsLoading(false);
+      }
+    }
+  }, [fileStorage, loadSavedFiles, showToast, t]);
+
+  useEffect(() => {
+    if (!hasDropbox) {
       return;
     }
 
@@ -68,41 +254,67 @@ export default function App() {
       const result = await dropboxAuth.processRedirectResult();
       if (result.status === 'success') {
         setIsDropboxConnected(true);
-        showToast(t('fileEditor.validation.dropboxConnected'), 'success');
+        showToast(
+          t('fileEditor.validation.cloudConnected', {
+            provider: resolveProviderName('dropbox')
+          }),
+          'success'
+        );
+        setActiveProvider((current) => current ?? 'dropbox');
       } else if (result.status === 'error') {
-        showToast(t('fileEditor.validation.dropboxAuthFailed', { message: result.message }), 'error');
+        showToast(
+          t('fileEditor.validation.cloudAuthFailed', {
+            provider: resolveProviderName('dropbox'),
+            message: result.message
+          }),
+          'error'
+        );
       }
     })();
-  }, [dropboxAuth, isDropboxAvailable, t]);
+  }, [dropboxAuth, hasDropbox, resolveProviderName, showToast, t]);
 
   useEffect(() => {
-    loadSavedFiles();
-  }, []);
+    setIsGoogleConnected(googleStorage.isReady());
+  }, [googleStorage]);
 
-  const showConfirmationDialog = (
-    title: string,
-    message: string,
-    type: 'danger' | 'warning' | 'info',
-    onConfirm: () => void
-  ) => {
+  useEffect(() => {
+    void loadSavedFiles();
+  }, [loadSavedFiles, activeProvider]);
+
+  useEffect(() => {
+    if (activeProvider === 'dropbox' && !isDropboxConnected) {
+      return;
+    }
+    if (activeProvider === 'googleDrive' && !isGoogleConnected) {
+      return;
+    }
+
+    void loadSavedFiles();
+  }, [activeProvider, isDropboxConnected, isGoogleConnected, loadSavedFiles]);
+
+  useEffect(() => {
+    if (conflictQueue.length === 0 || confirmationDialog.isOpen || isLoading) {
+      return;
+    }
+
+    const conflict = conflictQueue[0];
+    const providerLabel = resolveProviderName(activeProvider);
+
     setConfirmationDialog({
       isOpen: true,
-      title,
-      message,
-      type,
-      onConfirm
+      title: t('fileEditor.cloudConflictTitle', { provider: providerLabel }),
+      message: t('fileEditor.cloudConflictMessage', { filename: conflict.name, provider: providerLabel }),
+      type: 'warning',
+      confirmText: t('fileEditor.cloudConflictUploadButton', { provider: providerLabel }),
+      cancelText: t('fileEditor.cloudConflictDiscardButton'),
+      onConfirm: () => {
+        void handleConflictUpload(conflict);
+      },
+      onCancel: () => {
+        void handleConflictDiscard(conflict);
+      }
     });
-  };
-
-  const loadSavedFiles = async () => {
-    try {
-      const files = await fileStorage.listFiles();
-      setSavedFiles(files);
-    } catch (error) {
-      console.error("Error loading files:", error);
-      showToast(t('fileEditor.validation.errorLoading'), "error");
-    }
-  };
+  }, [activeProvider, conflictQueue, confirmationDialog.isOpen, handleConflictDiscard, handleConflictUpload, isLoading, resolveProviderName, t]);
 
   const saveFile = async () => {
     if (!fileName.trim() || !currentContent.trim()) {
@@ -117,21 +329,24 @@ export default function App() {
 
       if (fileExists) {
         // Show overwrite confirmation
-        setConfirmationDialog({
-          isOpen: true,
-          title: t('fileEditor.confirmOverwriteTitle'),
-          message: t('fileEditor.confirmOverwriteMessage', { filename: fileName }),
-          type: "warning",
-          onConfirm: async () => {
-            setConfirmationDialog(prev => ({ ...prev, isOpen: false }));
-            // Proceed with overwrite
-            await performSave();
+        showConfirmationDialog(
+          t('fileEditor.confirmOverwriteTitle'),
+          t('fileEditor.confirmOverwriteMessage', { filename: fileName }),
+          "warning",
+          async () => {
+            setIsLoading(true);
+            try {
+              await performSave();
+            } finally {
+              setIsLoading(false);
+            }
           }
-        });
-      } else {
-        // File doesn't exist, save normally
-        await performSave();
+        );
+        return;
       }
+
+      // File doesn't exist, save normally
+      await performSave();
     } catch (error) {
       console.error("Error saving file:", error);
       const errorMessage = error instanceof Error ? error.message : t('fileEditor.validation.errorSaving');
@@ -148,16 +363,22 @@ export default function App() {
       setFileName("");
       setCurrentContent("");
       await loadSavedFiles(); // Refresh the file list
-      setIsDropboxConnected(dropboxStorage.isReady());
+      refreshConnectionStates();
     } catch (error) {
-      if (error instanceof DropboxSyncError) {
-        console.warn("Dropbox sync failed:", error);
-        // File was saved locally but Dropbox sync failed
-        showToast(t('fileEditor.validation.dropboxUploadFailed', { message: error.message }), "warning");
+      if (error instanceof CloudSyncError) {
+        console.warn(`${error.provider} sync failed:`, error);
+        // File was saved locally but cloud sync failed
+        showToast(
+          t('fileEditor.validation.cloudUploadFailed', {
+            message: error.message,
+            provider: resolveProviderName(error.provider)
+          }),
+          "warning"
+        );
         setFileName("");
         setCurrentContent("");
         await loadSavedFiles();
-        setIsDropboxConnected(dropboxStorage.isReady());
+        refreshConnectionStates();
         return;
       }
 
@@ -190,7 +411,6 @@ export default function App() {
       t('fileEditor.confirmDeleteMessage', { filename: fileName }),
       "danger",
       async () => {
-        setConfirmationDialog(prev => ({ ...prev, isOpen: false }));
         setIsLoading(true);
         try {
           await fileStorage.deleteFile(fileName);
@@ -213,7 +433,6 @@ export default function App() {
       t('fileEditor.confirmClearMessage'),
       "danger",
       async () => {
-        setConfirmationDialog(prev => ({ ...prev, isOpen: false }));
         setIsLoading(true);
         try {
           await fileStorage.clearAll();
@@ -233,8 +452,11 @@ export default function App() {
   };
 
   const connectDropbox = () => {
-    if (!isDropboxAvailable) {
-      showToast(t('fileEditor.validation.dropboxAuthFailed', { message: t('fileEditor.dropbox.unavailable') }), 'error');
+    if (!hasDropbox) {
+      showToast(
+        t('fileEditor.cloud.unavailable', { provider: resolveProviderName('dropbox') }),
+        'error'
+      );
       return;
     }
     void dropboxAuth.startAuthentication();
@@ -243,36 +465,62 @@ export default function App() {
   const disconnectDropbox = () => {
     dropboxAuth.signOut();
     setIsDropboxConnected(false);
-    showToast(t('fileEditor.validation.dropboxDisconnected'), 'info');
+    showToast(
+      t('fileEditor.validation.cloudDisconnected', { provider: resolveProviderName('dropbox') }),
+      'info'
+    );
+    refreshConnectionStates();
   };
 
-  const testDropboxConnection = async () => {
-    setIsLoading(true);
+  const connectGoogleDrive = async () => {
+    if (!hasGoogleDrive) {
+      showToast(
+        t('fileEditor.cloud.unavailable', { provider: resolveProviderName('googleDrive') }),
+        'error'
+      );
+      return;
+    }
+
     try {
-      const result = await dropboxStorage.testConnection();
-      if (result.success) {
-        showToast(`✅ ${result.message}`, 'success');
-      } else {
-        showToast(`❌ ${result.message}`, 'error');
-      }
+      await googleAuth.ensureAccessToken({ prompt: true });
+      setIsGoogleConnected(true);
+      setActiveProvider('googleDrive');
+      showToast(
+        t('fileEditor.validation.cloudConnected', {
+          provider: resolveProviderName('googleDrive')
+        }),
+        'success'
+      );
+      refreshConnectionStates();
+      await loadSavedFiles();
     } catch (error) {
-      console.error('Connection test error:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Connection test failed';
-      showToast(`❌ Connection test failed: ${errorMessage}`, 'error');
-    } finally {
-      setIsLoading(false);
+      const message = error instanceof CloudSyncError
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : t('fileEditor.validation.cloudAuthFailedDefault', {
+            provider: resolveProviderName('googleDrive')
+          });
+      showToast(
+        t('fileEditor.validation.cloudAuthFailed', {
+          provider: resolveProviderName('googleDrive'),
+          message
+        }),
+        'error'
+      );
     }
   };
 
-  const clearAndReconnectDropbox = () => {
-    dropboxAuth.clearStoredData();
-    setIsDropboxConnected(false);
-    showToast('Cleared Dropbox data. Please connect again.', 'info');
-
-    // Automatically start reconnection after a short delay
-    setTimeout(() => {
-      connectDropbox();
-    }, 1000);
+  const disconnectGoogleDrive = () => {
+    googleAuth.signOut();
+    setIsGoogleConnected(false);
+    showToast(
+      t('fileEditor.validation.cloudDisconnected', {
+        provider: resolveProviderName('googleDrive')
+      }),
+      'info'
+    );
+    refreshConnectionStates();
   };
 
   return (
@@ -291,53 +539,104 @@ export default function App() {
           </p>
         </div>
 
-        {isDropboxAvailable ? (
-          <div className="bg-white border border-slate-200 shadow-sm rounded-xl p-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div>
+        {(hasDropbox || hasGoogleDrive) ? (
+          <div className="bg-white border border-slate-200 shadow-sm rounded-xl p-6 space-y-4">
+            <div className="space-y-2">
               <h2 className="text-xl font-semibold text-slate-900">
-                {t('fileEditor.dropbox.title')}
+                {t('fileEditor.cloud.title')}
               </h2>
               <p className="text-slate-600 text-sm">
-                {isDropboxConnected
-                  ? t('fileEditor.dropbox.statusConnected')
-                  : t('fileEditor.dropbox.statusNotConnected')}
+                {t('fileEditor.cloud.description')}
               </p>
             </div>
-            <div className="flex gap-3">
-              {isDropboxConnected ? (
-                <>
-                  <button
-                    onClick={disconnectDropbox}
-                    className="px-4 py-2 rounded-md border border-slate-200 text-slate-700 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-300 transition-colors"
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+              <div className="w-full sm:w-1/2">
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {t('fileEditor.cloud.providerLabel')}
+                </label>
+                <div className="relative">
+                  <FontAwesomeIcon
+                    icon={selectedProviderIcon}
+                    className={`pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-lg ${selectedProviderIconClass}`}
+                  />
+                  <select
+                    value={activeProvider ?? ''}
+                    onChange={(event) => {
+                      const next = event.target.value as CloudProvider | '';
+                      setActiveProvider(next === '' ? null : next);
+                    }}
+                    className="w-full appearance-none border border-slate-300 rounded-md bg-white pl-10 pr-10 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   >
-                    {t('fileEditor.dropbox.disconnect')}
-                  </button>
-                  <button
-                    onClick={testDropboxConnection}
-                    className="px-4 py-2 rounded-md bg-green-600 text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 transition-colors"
-                  >
-                    Test Connection
-                  </button>
-                  <button
-                    onClick={clearAndReconnectDropbox}
-                    className="px-4 py-2 rounded-md bg-orange-600 text-white hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-orange-500 transition-colors"
-                  >
-                    Clear & Reconnect
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={connectDropbox}
-                  className="px-4 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
-                >
-                  {t('fileEditor.dropbox.connect')}
-                </button>
+                    <option value="">{t('fileEditor.cloud.localOnlyOption')}</option>
+                    {hasDropbox && (
+                      <option value="dropbox">{t('providers.dropbox')}</option>
+                    )}
+                    {hasGoogleDrive && (
+                      <option value="googleDrive">{t('providers.googleDrive')}</option>
+                    )}
+                  </select>
+                  <FontAwesomeIcon
+                    icon={faChevronDown}
+                    className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400"
+                  />
+                </div>
+              </div>
+
+              {activeProvider && (
+                <div className="flex flex-col sm:flex-row sm:items-center sm:gap-4 gap-2 w-full sm:w-auto">
+                  <div>
+                    <p className="text-sm text-slate-600">
+                      {isActiveProviderConnected
+                        ? t('fileEditor.cloud.statusConnected', { provider: activeProviderLabel })
+                        : t('fileEditor.cloud.statusNotConnected', { provider: activeProviderLabel })}
+                    </p>
+                  </div>
+                  <div className="flex gap-3">
+                    {activeProvider === 'dropbox' ? (
+                      isDropboxConnected ? (
+                        <button
+                          type="button"
+                          onClick={disconnectDropbox}
+                          className="px-4 py-2 border border-slate-300 rounded text-slate-700 hover:bg-slate-100 disabled:bg-gray-400 disabled:cursor-not-allowed w-full sm:w-auto"
+                        >
+                          {t('fileEditor.cloud.disconnectButton', { provider: activeProviderLabel })}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={connectDropbox}
+                          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed w-full sm:w-auto"
+                        >
+                          {t('fileEditor.cloud.connectButton', { provider: activeProviderLabel })}
+                        </button>
+                      )
+                    ) : activeProvider === 'googleDrive' ? (
+                      isGoogleConnected ? (
+                        <button
+                          type="button"
+                          onClick={disconnectGoogleDrive}
+                          className="px-4 py-2 border border-slate-300 rounded text-slate-700 hover:bg-slate-100 disabled:bg-gray-400 disabled:cursor-not-allowed w-full sm:w-auto"
+                        >
+                          {t('fileEditor.cloud.disconnectButton', { provider: activeProviderLabel })}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={connectGoogleDrive}
+                          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed w-full sm:w-auto"
+                        >
+                          {t('fileEditor.cloud.connectButton', { provider: activeProviderLabel })}
+                        </button>
+                      )
+                    ) : null}
+                  </div>
+                </div>
               )}
             </div>
           </div>
         ) : (
           <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg p-4 text-sm">
-            {t('fileEditor.dropbox.unavailable')}
+            {t('fileEditor.cloud.noneConfigured')}
           </div>
         )}
 
@@ -406,6 +705,11 @@ export default function App() {
                       <p className="text-sm text-gray-500">
                         {t('fileEditor.created')}: {new Date(file.createdAt).toLocaleString()} • {t('fileEditor.size')}: {file.size} {t('fileEditor.bytes')}
                       </p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        {t('fileEditor.storageLocation')}: {file.syncedProvider
+                          ? t('fileEditor.locationSynced', { provider: resolveProviderName(file.syncedProvider) })
+                          : t('fileEditor.locationLocal')}
+                      </p>
                     </div>
                     <div className="flex gap-2">
                       <button
@@ -434,10 +738,6 @@ export default function App() {
             </div>
           )}
         </div>
-
-        <p className="text-sm text-slate-500 text-center">
-          If you can see this styled, Tailwind + React + Vite + i18n are working.
-        </p>
       </div>
 
       {/* Toast Notifications */}
@@ -454,9 +754,30 @@ export default function App() {
         title={confirmationDialog.title}
         message={confirmationDialog.message}
         type={confirmationDialog.type}
+        confirmText={confirmationDialog.confirmText}
+        cancelText={confirmationDialog.cancelText}
         isOverwrite={confirmationDialog.title === t('fileEditor.confirmOverwriteTitle')}
-        onConfirm={confirmationDialog.onConfirm}
-        onCancel={() => setConfirmationDialog(prev => ({ ...prev, isOpen: false }))}
+        onConfirm={() => {
+          const action = confirmationDialog.onConfirm;
+          setConfirmationDialog(prev => ({
+            ...prev,
+            isOpen: false,
+            confirmText: undefined,
+            cancelText: undefined,
+            onConfirm: undefined,
+            onCancel: undefined
+          }));
+          if (action) {
+            void action();
+          }
+        }}
+        onCancel={() => {
+          const cancelAction = confirmationDialog.onCancel;
+          setConfirmationDialog(prev => ({ ...prev, isOpen: false, confirmText: undefined, cancelText: undefined, onConfirm: undefined, onCancel: undefined }));
+          if (cancelAction) {
+            void cancelAction();
+          }
+        }}
       />
     </div>
   );

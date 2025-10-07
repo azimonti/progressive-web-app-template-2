@@ -1,4 +1,6 @@
 import { useTranslation } from 'react-i18next';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faChevronDown } from '@fortawesome/free-solid-svg-icons';
 
 const LanguageSwitcher = () => {
   const { i18n, t } = useTranslation();
@@ -17,10 +19,8 @@ const LanguageSwitcher = () => {
         <option value="ja">{t('common.japanese')}</option>
         <option value="en">{t('common.english')}</option>
       </select>
-      <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
-        <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
+      <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
+        <FontAwesomeIcon icon={faChevronDown} className="h-4 w-4" />
       </div>
     </div>
   );

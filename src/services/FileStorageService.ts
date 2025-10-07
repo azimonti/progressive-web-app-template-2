@@ -1,21 +1,37 @@
-import { DropboxStorageService, DropboxSyncError } from './DropboxStorageService';
+import type { CloudProvider, CloudStorage } from './CloudStorage';
+import { CloudSyncError } from './CloudStorage';
 
-interface StoredFile {
+export interface StoredFile {
   id: string;
   name: string;
   content: string;
   createdAt: string;
   size: number;
+  syncedProvider: CloudProvider | null;
+  syncedToDropbox: boolean;
 }
+
+export type ListFilesResult = {
+  files: StoredFile[];
+  conflicts: StoredFile[];
+};
 
 export class FileStorageService {
   private readonly STORAGE_KEY = 'pwa_files';
   private readonly MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB per file
   private readonly MAX_TOTAL_SIZE = 50 * 1024 * 1024; // 50MB total
-  private readonly dropboxStorage: DropboxStorageService;
+  private cloudStorage: CloudStorage | null;
 
-  constructor(dropboxStorage?: DropboxStorageService) {
-    this.dropboxStorage = dropboxStorage ?? new DropboxStorageService();
+  constructor(cloudStorage?: CloudStorage) {
+    this.cloudStorage = cloudStorage ?? null;
+  }
+
+  setCloudStorage(storage?: CloudStorage | null): void {
+    this.cloudStorage = storage ?? null;
+  }
+
+  getCloudStorage(): CloudStorage | null {
+    return this.cloudStorage;
   }
 
   /**
@@ -39,7 +55,7 @@ export class FileStorageService {
 
     try {
       // Get existing files
-      const existingFiles = await this.getStoredFiles();
+      const { files: existingFiles } = await this.getSyncedFiles();
 
       // Check if file already exists
       const existingIndex = existingFiles.findIndex(file => file.name === fileName);
@@ -50,13 +66,20 @@ export class FileStorageService {
         throw new Error(`Adding this file would exceed storage limit. Current usage: ${this.formatBytes(currentTotalSize)}, Limit: ${this.formatBytes(this.MAX_TOTAL_SIZE)}`);
       }
 
+      const previousProvider = existingIndex !== -1
+        ? existingFiles[existingIndex].syncedProvider ??
+          (existingFiles[existingIndex].syncedToDropbox ? 'dropbox' : null)
+        : null;
+
       // Create new file object
       const fileObject: StoredFile = {
         id: existingIndex !== -1 ? existingFiles[existingIndex].id : this.generateId(),
         name: fileName,
         content,
         createdAt: existingIndex !== -1 ? existingFiles[existingIndex].createdAt : new Date().toISOString(),
-        size: contentSize
+        size: contentSize,
+        syncedProvider: previousProvider,
+        syncedToDropbox: previousProvider === 'dropbox'
       };
 
       // Update or add file
@@ -67,13 +90,33 @@ export class FileStorageService {
       }
 
       // Save to localStorage
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(existingFiles));
+      this.writeToLocalStorage(existingFiles);
 
-      // Mirror file to Dropbox if configured
-      await this.syncToDropbox(fileName, content);
+      // Mirror file to active cloud provider if configured
+      const syncResult = await this.syncToCloud(fileName, content);
+      const previousSyncedProvider = fileObject.syncedProvider ?? null;
+
+      if (syncResult.status === 'synced') {
+        fileObject.syncedProvider = syncResult.provider;
+      } else if (syncResult.status === 'failed') {
+        fileObject.syncedProvider = null;
+      }
+
+      fileObject.syncedToDropbox = fileObject.syncedProvider === 'dropbox';
+
+      if (
+        previousSyncedProvider !== fileObject.syncedProvider ||
+        fileObject.syncedToDropbox !== (previousSyncedProvider === 'dropbox')
+      ) {
+        this.writeToLocalStorage(existingFiles);
+      }
+
+      if (syncResult.status === 'failed') {
+        throw syncResult.error;
+      }
 
     } catch (error) {
-      if (error instanceof DropboxSyncError) {
+      if (error instanceof CloudSyncError) {
         throw error;
       }
 
@@ -109,12 +152,12 @@ export class FileStorageService {
   /**
    * List all saved files
    */
-  async listFiles(): Promise<StoredFile[]> {
+  async listFiles(): Promise<ListFilesResult> {
     try {
-      return await this.getStoredFiles();
+      return await this.getSyncedFiles();
     } catch (error) {
       console.error('Error listing files:', error);
-      return [];
+      return { files: [], conflicts: [] };
     }
   }
 
@@ -133,12 +176,17 @@ export class FileStorageService {
       throw new Error(`File "${fileName}" not found`);
     }
 
-    localStorage.setItem(this.STORAGE_KEY, JSON.stringify(filteredFiles));
+    this.writeToLocalStorage(filteredFiles);
+
+    const storage = this.getAvailableCloudStorage();
+    if (!storage) {
+      return;
+    }
 
     try {
-      await this.dropboxStorage.deleteFile(fileName);
+      await storage.deleteFile(fileName);
     } catch (error) {
-      console.error('Failed to delete file from Dropbox:', error);
+      console.error(`Failed to delete file from ${storage.provider}:`, error);
     }
   }
 
@@ -148,8 +196,7 @@ export class FileStorageService {
   async clearAll(): Promise<void> {
     try {
       localStorage.removeItem(this.STORAGE_KEY);
-      await this.dropboxStorage.clearAll();
-    } catch (error) {
+    } catch {
       throw new Error('Failed to clear files');
     }
   }
@@ -195,33 +242,93 @@ export class FileStorageService {
   }
 
   /**
-   * Private method to get stored files from localStorage
+   * Upload a locally stored file that is missing remotely.
    */
-  private async getStoredFiles(): Promise<StoredFile[]> {
+  async uploadLocalOnlyFile(file: StoredFile): Promise<void> {
+    const storage = this.getAvailableCloudStorage();
+    if (!storage || !storage.isReady()) {
+      throw new CloudSyncError(
+        storage?.provider ?? 'dropbox',
+        'Cloud storage is not connected. Please connect before uploading.'
+      );
+    }
+
     try {
-      const stored = localStorage.getItem(this.STORAGE_KEY);
-      if (!stored) {
-        return [];
+      await storage.uploadFile(file.name, file.content);
+      await this.getSyncedFiles();
+    } catch (error) {
+      if (error instanceof CloudSyncError) {
+        throw error;
       }
 
-      const files: StoredFile[] = JSON.parse(stored);
-
-      // Validate and clean up corrupted data
-      return files.filter(file =>
-        file &&
-        typeof file === 'object' &&
-        file.id &&
-        file.name &&
-        file.content !== undefined &&
-        file.createdAt &&
-        file.size !== undefined
+      throw new CloudSyncError(
+        storage.provider,
+        error instanceof Error ? error.message : 'Unknown cloud storage error during upload',
+        { cause: error instanceof Error ? error : undefined }
       );
+    }
+  }
+
+  /**
+   * Discard a locally stored file that is missing remotely.
+   */
+  discardLocalOnlyFile(fileName: string): void {
+    const localFiles = this.readLocalStorage().filter(file => file.name !== fileName);
+    this.writeToLocalStorage(localFiles);
+  }
+
+  /**
+   * Private method to get stored files from localStorage and ensure Dropbox sync.
+   */
+  private async getStoredFiles(): Promise<StoredFile[]> {
+    const { files } = await this.getSyncedFiles();
+    return files;
+  }
+
+  private async getSyncedFiles(): Promise<ListFilesResult> {
+    const localFiles = this.readLocalStorage();
+    return this.syncFromCloud(localFiles);
+  }
+
+  private readLocalStorage(): StoredFile[] {
+    let localFiles: StoredFile[] = [];
+
+    try {
+      const stored = localStorage.getItem(this.STORAGE_KEY);
+      if (stored) {
+        const parsed: StoredFile[] = JSON.parse(stored);
+        localFiles = parsed
+          .filter(file =>
+            file &&
+            typeof file === 'object' &&
+            typeof file.id === 'string' &&
+            typeof file.name === 'string' &&
+            typeof file.content === 'string' &&
+            typeof file.createdAt === 'string' &&
+            typeof file.size === 'number'
+          )
+          .map(file => {
+            const stored = file as Partial<StoredFile>;
+            const inferredProvider = stored.syncedProvider ??
+              (stored.syncedToDropbox ? 'dropbox' : null);
+            return {
+              ...file,
+              syncedProvider: inferredProvider ?? null,
+              syncedToDropbox: inferredProvider === 'dropbox'
+            };
+          });
+      }
     } catch (error) {
       console.error('Error reading stored files:', error);
-      // If data is corrupted, clear it and return empty array
       localStorage.removeItem(this.STORAGE_KEY);
-      return [];
+      localFiles = [];
     }
+
+    return localFiles;
+  }
+
+  private writeToLocalStorage(files: StoredFile[]): void {
+    localStorage.setItem(this.STORAGE_KEY, JSON.stringify(files));
   }
 
   /**
@@ -244,20 +351,116 @@ export class FileStorageService {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }
 
-  private async syncToDropbox(fileName: string, content: string): Promise<void> {
-    if (!this.dropboxStorage.isReady()) {
-      console.warn('Dropbox not ready, skipping sync');
-      return;
+  private getAvailableCloudStorage(): CloudStorage | null {
+    if (!this.cloudStorage) {
+      return null;
+    }
+
+    if (!this.cloudStorage.isAvailable()) {
+      return null;
+    }
+
+    return this.cloudStorage;
+  }
+
+  private async syncToCloud(
+    fileName: string,
+    content: string
+  ): Promise<
+    | { status: 'skipped' }
+    | { status: 'synced'; provider: CloudProvider }
+    | { status: 'failed'; error: CloudSyncError }
+  > {
+    const storage = this.getAvailableCloudStorage();
+    if (!storage || !storage.isReady()) {
+      console.warn('Cloud storage not ready, skipping sync');
+      return { status: 'skipped' };
     }
 
     try {
-      console.log(`Syncing file to Dropbox: ${fileName}`);
-      await this.dropboxStorage.uploadFile(fileName, content);
-      console.log(`Successfully synced file to Dropbox: ${fileName}`);
+      console.log(`Syncing file to ${storage.provider}: ${fileName}`);
+      await storage.uploadFile(fileName, content);
+      console.log(`Successfully synced file to ${storage.provider}: ${fileName}`);
+      return { status: 'synced', provider: storage.provider };
     } catch (error) {
-      console.error(`Failed to sync file to Dropbox: ${fileName}`, error);
-      // Don't throw the error - we still want local storage to work
-      // The error will be handled by the calling code if needed
+      console.error(`Failed to sync file to ${storage.provider}: ${fileName}`, error);
+      const cloudError = error instanceof CloudSyncError
+        ? error
+        : new CloudSyncError(
+          storage.provider,
+          error instanceof Error ? error.message : 'Unknown cloud storage error',
+          { cause: error instanceof Error ? error : undefined }
+        );
+      return { status: 'failed', error: cloudError };
+    }
+  }
+
+  private async syncFromCloud(existingFiles: StoredFile[]): Promise<ListFilesResult> {
+    const storage = this.getAvailableCloudStorage();
+    if (!storage || !storage.isReady()) {
+      return {
+        files: existingFiles,
+        conflicts: []
+      };
+    }
+
+    try {
+      const remoteFiles = await storage.fetchFiles();
+
+      const localFilesMap = new Map(existingFiles.map(file => [file.name, file]));
+      const remoteFilesMap = new Map(remoteFiles.map(file => [file.name, file]));
+
+      const mergedFiles: StoredFile[] = [];
+      const conflicts: StoredFile[] = [];
+
+      for (const localFile of existingFiles) {
+        const remoteFile = remoteFilesMap.get(localFile.name);
+
+        if (remoteFile) {
+          mergedFiles.push({
+            ...localFile,
+            content: remoteFile.content,
+            size: remoteFile.size,
+            createdAt: localFile.createdAt ?? remoteFile.clientModified ?? new Date().toISOString(),
+            syncedProvider: storage.provider,
+            syncedToDropbox: storage.provider === 'dropbox'
+          });
+        } else {
+          const conflictEntry: StoredFile = {
+            ...localFile,
+            syncedProvider: null,
+            syncedToDropbox: false
+          };
+
+          conflicts.push(conflictEntry);
+          mergedFiles.push(conflictEntry);
+        }
+
+        localFilesMap.delete(localFile.name);
+        remoteFilesMap.delete(localFile.name);
+      }
+
+      for (const remoteFile of remoteFilesMap.values()) {
+        mergedFiles.push({
+          id: this.generateId(),
+          name: remoteFile.name,
+          content: remoteFile.content,
+          createdAt: remoteFile.clientModified ?? new Date().toISOString(),
+          size: remoteFile.size,
+          syncedProvider: storage.provider,
+          syncedToDropbox: storage.provider === 'dropbox'
+        });
+      }
+
+      this.writeToLocalStorage(mergedFiles);
+
+      return { files: mergedFiles, conflicts };
+    } catch (error) {
+      console.error('Failed to sync files from cloud storage:', error);
+      return {
+        files: existingFiles,
+        conflicts: []
+      };
     }
   }
 }

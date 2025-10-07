@@ -29,3 +29,4 @@ firebase-debug.log
 
 # local files
 .env
+*.pem

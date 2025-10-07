@@ -1,31 +1,41 @@
 import { Dropbox } from 'dropbox';
-import type { files } from 'dropbox';
+import type { DropboxResponse, files } from 'dropbox';
 import { DropboxAuthService } from './DropboxAuthService';
+import type { CloudStorage, CloudFileData } from './CloudStorage';
+import { CloudSyncError } from './CloudStorage';
 
-export class DropboxSyncError extends Error {
+export class DropboxSyncError extends CloudSyncError {
   constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
+    super('dropbox', message, options);
     this.name = 'DropboxSyncError';
   }
 }
 
+export type DropboxFileData = CloudFileData;
+
+type DropboxErrorShape = {
+  error?: {
+    ['.tag']?: string;
+    path?: { ['.tag']?: string };
+    path_lookup?: { ['.tag']?: string };
+  };
+  ['.tag']?: string;
+  status?: number;
+  error_summary?: string;
+  message?: string;
+};
+
 /**
  * Handles storing files in Dropbox to mirror local storage.
  */
-export class DropboxStorageService {
+export class DropboxStorageService implements CloudStorage {
+  readonly provider = 'dropbox' as const;
   private readonly authService: DropboxAuthService;
-  private readonly basePath: string;
   private dropbox: Dropbox | null = null;
   private currentToken: string | null = null;
-  private folderEnsured = false;
 
   constructor(authService: DropboxAuthService = new DropboxAuthService()) {
     this.authService = authService;
-    // Scoped apps can store directly at the root; allow empty base path by default.
-    this.basePath = this.normaliseBasePath(import.meta.env.VITE_DROPBOX_BASE_PATH);
-    if (this.basePath === '') {
-      this.folderEnsured = true;
-    }
   }
 
   /**
@@ -42,68 +52,22 @@ export class DropboxStorageService {
     return this.authService.isAuthenticated();
   }
 
-  /**
-   * Test the Dropbox connection and permissions
-   */
-  async testConnection(): Promise<{ success: boolean; message: string }> {
-    const client = this.getClient();
-    if (!client) {
-      return { success: false, message: 'No Dropbox client available - check authentication' };
-    }
-
-    const tempFileName = this.buildTempFileName();
-    const tempFilePath = this.buildPath(tempFileName);
-
-    try {
-      await this.ensureFolder(client);
-
-      // Attempt to write a tiny test file to ensure we have write access.
-      const uploadResult = await client.filesUpload({
-        path: tempFilePath,
-        contents: 'Dropbox connection test',
-        mode: { '.tag': 'add' },
-        autorename: false,
-        mute: true
-      });
-
-      const finalPath = uploadResult?.path_display ?? tempFilePath;
-
-      return {
-        success: true,
-        message: `Dropbox connection verified with write access. Test file created at: ${finalPath}`
-      };
-    } catch (error) {
-      console.error('Dropbox connection test failed:', error);
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return { success: false, message: `Connection test failed: ${message}` };
-    }
-  }
-
   async uploadFile(fileName: string, content: string): Promise<void> {
     const client = this.getClient();
     if (!client) {
       throw new DropboxSyncError('Dropbox client not available - check authentication');
     }
 
-    try {
-      await this.ensureFolder(client);
-    } catch (error) {
-      console.error('Failed to ensure folder:', error);
-      throw new DropboxSyncError(`Failed to create/access folder: ${error instanceof Error ? error.message : 'Unknown error'}`, { cause: error });
-    }
-
     const path = this.buildPath(fileName);
     const mode: files.WriteMode = { '.tag': 'overwrite' };
 
     try {
-      console.log(`Attempting to upload file: ${path}`);
       await client.filesUpload({
         path,
         contents: content,
         mode,
         mute: true
       });
-      console.log(`Successfully uploaded file: ${path}`);
     } catch (error) {
       console.error('Dropbox upload error:', error);
       const message = error instanceof Error ? error.message : 'Unknown Dropbox error';
@@ -145,25 +109,102 @@ export class DropboxStorageService {
     }
   }
 
-  async clearAll(): Promise<void> {
+  async fetchFiles(): Promise<DropboxFileData[]> {
     const client = this.getClient();
     if (!client) {
-      return;
+      return [];
     }
+
+    const filesData: DropboxFileData[] = [];
+    let cursor: string | null = null;
 
     try {
-      if (!this.basePath) {
-        console.warn('No base path configured for Dropbox clearAll; skipping remote deletion.');
-        return;
+      do {
+        const response: DropboxResponse<files.ListFolderResult> = cursor
+          ? await client.filesListFolderContinue({ cursor })
+          : await client.filesListFolder({ path: '' });
+
+        const { entries, has_more: hasMore, cursor: nextCursor } = response.result;
+
+        const fileEntries = entries.filter(
+          (entry): entry is files.FileMetadataReference => entry['.tag'] === 'file'
+        );
+
+        for (const entry of fileEntries) {
+          const downloadPath = entry.path_lower ?? entry.path_display ?? this.buildPath(entry.name);
+          const identifier = entry.id ?? downloadPath;
+
+          let downloadResult: DropboxDownloadResult | null = null;
+          try {
+            const downloadResponse = await client.filesDownload({ path: identifier });
+            downloadResult = downloadResponse.result as DropboxDownloadResult;
+          } catch (downloadError) {
+            const missingScopes = this.extractMissingScopes(downloadError);
+            if (missingScopes) {
+              this.authService.signOut();
+              throw new DropboxSyncError(
+                `Dropbox access is missing required scopes (${missingScopes.join(', ')}). Please reconnect to Dropbox.`,
+                { cause: downloadError instanceof Error ? downloadError : undefined }
+              );
+            }
+
+            if (this.isPathNotFoundError(downloadError)) {
+              console.warn(`Dropbox file missing during download, skipping: ${entry.name}`);
+              continue;
+            }
+
+            console.error('Dropbox download error:', this.debugError(downloadError));
+            continue;
+          }
+
+          const blob =
+            downloadResult.fileBlob ??
+            (downloadResult.fileBinary instanceof ArrayBuffer
+              ? new Blob([downloadResult.fileBinary])
+              : null);
+
+          if (!blob) {
+            console.warn(`Unable to read Dropbox file content for ${entry.name}`);
+            continue;
+          }
+
+          let content: string;
+          try {
+            content = await blob.text();
+          } catch (blobError) {
+            console.error(`Failed to read blob for ${entry.name}:`, blobError);
+            continue;
+          }
+
+          filesData.push({
+            name: entry.name,
+            path: downloadPath,
+            clientModified: entry.client_modified ?? null,
+            size: entry.size,
+            content
+          });
+        }
+
+        cursor = hasMore ? nextCursor ?? null : null;
+      } while (cursor);
+    } catch (error) {
+      const missingScopes = this.extractMissingScopes(error);
+      if (missingScopes) {
+        this.authService.signOut();
+        throw new DropboxSyncError(
+          `Dropbox access is missing required scopes (${missingScopes.join(', ')}). Please reconnect to Dropbox.`,
+          { cause: error instanceof Error ? error : undefined }
+        );
       }
 
-      await client.filesDeleteV2({ path: this.basePath });
-      this.folderEnsured = false;
-    } catch (error) {
-      if (!this.isPathNotFoundError(error)) {
-        throw error;
-      }
+      console.error('Failed to fetch files from Dropbox:', this.debugError(error));
+      throw new DropboxSyncError(
+        `Failed to fetch files from Dropbox: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        { cause: error instanceof Error ? error : undefined }
+      );
     }
+
+    return filesData;
   }
 
   private getClient(): Dropbox | null {
@@ -171,7 +212,6 @@ export class DropboxStorageService {
     if (!token) {
       this.dropbox = null;
       this.currentToken = null;
-      this.folderEnsured = false;
       return null;
     }
 
@@ -179,42 +219,9 @@ export class DropboxStorageService {
       console.log('Initializing Dropbox client with token:', token.substring(0, 10) + '...');
       this.dropbox = new Dropbox({ accessToken: token });
       this.currentToken = token;
-      this.folderEnsured = false;
     }
 
     return this.dropbox;
-  }
-
-  private async ensureFolder(client: Dropbox): Promise<void> {
-    if (this.folderEnsured) {
-      return;
-    }
-
-    if (this.basePath === '' || this.basePath === '/') {
-      this.folderEnsured = true;
-      return;
-    }
-
-    console.log(`Ensuring Dropbox folder exists: ${this.basePath}`);
-
-    try {
-      await client.filesCreateFolderV2({ path: this.basePath, autorename: false });
-      console.log(`Successfully created folder: ${this.basePath}`);
-      this.folderEnsured = true;
-    } catch (error) {
-      console.error('Folder creation error:', error);
-      if (this.isFolderAlreadyExistsError(error)) {
-        console.log(`Folder already exists: ${this.basePath}`);
-        this.folderEnsured = true;
-        return;
-      }
-
-      if (this.isPathNotFoundError(error)) {
-        console.log(`Parent path missing for ${this.basePath}`);
-      }
-
-      throw error;
-    }
   }
 
   private isPathNotFoundError(error: unknown): boolean {
@@ -223,7 +230,7 @@ export class DropboxStorageService {
     }
 
     // Handle different Dropbox API error structures
-    const errorObj = error as any;
+    const errorObj = error as DropboxErrorShape;
 
     // Check for path not found errors in different formats
     const errorTag = errorObj.error?.['.tag'] ?? errorObj?.['.tag'];
@@ -258,52 +265,120 @@ export class DropboxStorageService {
     return false;
   }
 
-  private isFolderAlreadyExistsError(error: unknown): boolean {
+  private debugError(error: unknown): unknown {
     if (!error || typeof error !== 'object') {
-      return false;
+      return error;
     }
 
-    const errorObj = error as any;
+    const errorObj = error as DropboxErrorShape & {
+      error_summary?: string;
+      error?: unknown;
+    };
 
-    if (errorObj.error?.['.tag'] === 'path' && errorObj.error?.path?.['.tag'] === 'conflict') {
-      return true;
-    }
+    const summary = errorObj.error_summary;
+    const message = errorObj.message;
+    const status = errorObj.status;
+    const nested = errorObj.error && typeof errorObj.error === 'object'
+      ? JSON.stringify(errorObj.error, null, 2)
+      : undefined;
 
-    if (errorObj?.status === 409 && errorObj.error_summary?.includes('conflict')) {
-      return true;
-    }
-
-    return false;
+    return {
+      status,
+      summary,
+      message,
+      nested,
+      original: error
+    };
   }
 
-  private buildTempFileName(): string {
-    const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID()
-      : Math.random().toString(36).slice(2);
-    return `connection-test-${random}.txt`;
+  private extractMissingScopes(error: unknown): string[] | null {
+    if (!error || typeof error !== 'object') {
+      return null;
+    }
+
+    const scopes = new Set<string>();
+    const extract = (value: unknown): void => {
+      if (!value || typeof value !== 'object') {
+        return;
+      }
+
+      const obj = value as Record<string, unknown>;
+      const tag = typeof obj['.tag'] === 'string' ? obj['.tag'] : undefined;
+
+      if (tag === 'missing_scope') {
+        const missing = obj['missing_scope'] ?? obj['required_scope'];
+        if (typeof missing === 'string') {
+          scopes.add(missing);
+        } else if (Array.isArray(missing)) {
+          missing.forEach(scope => {
+            if (typeof scope === 'string') {
+              scopes.add(scope);
+            }
+          });
+        }
+      }
+
+      if (typeof obj['missing_scope'] === 'string') {
+        scopes.add(obj['missing_scope'] as string);
+      } else if (Array.isArray(obj['missing_scope'])) {
+        (obj['missing_scope'] as unknown[]).forEach(scope => {
+          if (typeof scope === 'string') {
+            scopes.add(scope);
+          }
+        });
+      }
+
+      // Inspect nested objects that commonly hold error data
+      const nestedKeys = ['error', 'reason', 'error_inner', 'cause'];
+      for (const key of nestedKeys) {
+        if (key in obj) {
+          extract(obj[key]);
+        }
+      }
+    };
+
+    const base = error as DropboxErrorShape & { error_summary?: string; error?: unknown };
+    const summary = typeof base.error_summary === 'string' ? base.error_summary : '';
+    if (summary.startsWith('missing_scope/')) {
+      const parts = summary.split('/').slice(1).map(part => part.trim()).filter(Boolean);
+      parts.forEach(part => scopes.add(part));
+    }
+
+    extract(base.error);
+
+    return scopes.size > 0 ? Array.from(scopes) : null;
   }
 
   private buildPath(fileName: string): string {
-    const rawPath = `${this.basePath}/${fileName}`;
-    return rawPath === '/' ? `/${fileName}` : rawPath.replace(/\/{2,}/g, '/');
+    const trimmed = fileName.trim();
+    if (!trimmed) {
+      throw new DropboxSyncError('File name is required to build a Dropbox path.');
+    }
+
+    const withLeadingSlash = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+    return withLeadingSlash.replace(/\/{2,}/g, '/');
   }
 
   private async resolvePathByName(client: Dropbox, fileName: string): Promise<string | null> {
     try {
-      const folderPath = this.basePath === '' ? '' : this.basePath;
+      const folderPath = '';
       let cursor: string | null = null;
 
       do {
-        const result = cursor
+        const response: DropboxResponse<files.ListFolderResult> = cursor
           ? await client.filesListFolderContinue({ cursor })
           : await client.filesListFolder({ path: folderPath });
+        const { entries, has_more: hasMore, cursor: nextCursor } = response.result;
 
-        const match = result.entries.find(entry => entry.name === fileName);
+        const match = entries.find(
+          (entry): entry is files.FileMetadataReference =>
+            entry['.tag'] === 'file' && entry.name === fileName
+        );
         if (match) {
           return match.path_display ?? match.path_lower ?? null;
         }
 
-        cursor = result.has_more ? result.cursor : null;
+        cursor = hasMore ? nextCursor : null;
       } while (cursor);
     } catch (error) {
       console.warn('Failed to resolve Dropbox path by name:', error);
@@ -312,17 +387,8 @@ export class DropboxStorageService {
     return null;
   }
 
-  private normaliseBasePath(path: string | undefined | null): string {
-    if (!path) {
-      return '';
-    }
-
-    const trimmed = path.trim();
-    if (trimmed === '' || trimmed === '/') {
-      return '';
-    }
-
-    const withLeadingSlash = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-    return withLeadingSlash.replace(/\/+$/, '');
-  }
 }
+type DropboxDownloadResult = files.FileMetadata & {
+  fileBlob?: Blob;
+  fileBinary?: ArrayBuffer;
+};
