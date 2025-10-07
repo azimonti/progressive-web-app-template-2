@@ -1,0 +1,65 @@
+{
+  "common": {
+    "welcome": "Welcome to PWA Template",
+    "description": "A modern Progressive Web App template built with React, TypeScript, and Tailwind CSS",
+    "getStarted": "Get Started",
+    "language": "Language",
+    "english": "English",
+    "japanese": "Japanese"
+  },
+  "nav": {
+    "home": "Home",
+    "about": "About",
+    "contact": "Contact"
+  },
+  "fileEditor": {
+    "title": "File Editor",
+    "filename": "Filename",
+    "filenamePlaceholder": "Enter filename",
+    "content": "Content",
+    "contentPlaceholder": "Enter file content...",
+    "saveFile": "Save File",
+    "saving": "Saving...",
+    "clearAllFiles": "Clear All Files",
+    "savedFiles": "Saved Files",
+    "noFiles": "No files saved yet",
+    "created": "Created",
+    "size": "Size",
+    "bytes": "bytes",
+    "load": "Load",
+    "delete": "Delete",
+    "dropbox": {
+      "title": "Dropbox Sync",
+      "statusConnected": "Connected to Dropbox",
+      "statusNotConnected": "Not connected to Dropbox",
+      "connect": "Connect Dropbox",
+      "disconnect": "Disconnect",
+      "unavailable": "Dropbox integration is not configured. Add your app key to enable it."
+    },
+    "confirmDeleteTitle": "Delete File",
+    "confirmDeleteMessage": "Are you sure you want to delete \"{{filename}}\"? This action cannot be undone.",
+    "confirmClearTitle": "Clear All Files",
+    "confirmClearMessage": "Are you sure you want to clear all saved files? This action cannot be undone.",
+    "confirmOverwriteTitle": "Overwrite File",
+    "confirmOverwriteMessage": "A file named \"{{filename}}\" already exists. Do you want to overwrite it?",
+    "confirmButton": "Delete",
+    "cancelButton": "Cancel",
+    "overwriteButton": "Overwrite",
+    "validation": {
+      "filenameRequired": "Please provide both filename and content",
+      "fileSaved": "File \"{{filename}}\" saved successfully",
+      "fileLoaded": "File \"{{filename}}\" loaded successfully",
+      "fileDeleted": "File \"{{filename}}\" deleted successfully",
+      "allFilesCleared": "All files cleared successfully",
+      "errorLoading": "Error loading saved files",
+      "errorSaving": "Error saving file",
+      "errorLoadingFile": "Error loading file",
+      "errorDeleting": "Error deleting file",
+      "errorClearing": "Error clearing files",
+      "dropboxUploadFailed": "File saved locally but Dropbox sync failed: {{message}}",
+      "dropboxConnected": "Dropbox connected successfully",
+      "dropboxDisconnected": "Dropbox disconnected",
+      "dropboxAuthFailed": "Dropbox authorization failed: {{message}}"
+    }
+  }
+}

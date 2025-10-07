@@ -1,0 +1,65 @@
+{
+  "common": {
+    "welcome": "PWAテンプレートへようこそ",
+    "description": "React、TypeScript、Tailwind CSSで構築されたモダンなプログレッシブウェブアプリテンプレート",
+    "getStarted": "開始する",
+    "language": "言語",
+    "english": "英語",
+    "japanese": "日本語"
+  },
+  "nav": {
+    "home": "ホーム",
+    "about": "概要",
+    "contact": "お問い合わせ"
+  },
+  "fileEditor": {
+    "title": "ファイルエディタ",
+    "filename": "ファイル名",
+    "filenamePlaceholder": "ファイル名を入力",
+    "content": "内容",
+    "contentPlaceholder": "ファイルの内容を入力...",
+    "saveFile": "ファイルを保存",
+    "saving": "保存中...",
+    "clearAllFiles": "すべてのファイルを削除",
+    "savedFiles": "保存済みファイル",
+    "noFiles": "まだファイルが保存されていません",
+    "created": "作成日",
+    "size": "サイズ",
+    "bytes": "バイト",
+    "load": "読み込み",
+    "delete": "削除",
+    "dropbox": {
+      "title": "Dropbox 同期",
+      "statusConnected": "Dropbox に接続されています",
+      "statusNotConnected": "Dropbox に接続されていません",
+      "connect": "Dropbox に接続",
+      "disconnect": "接続を解除",
+      "unavailable": "Dropbox 連携が構成されていません。アプリキーを追加してください。"
+    },
+    "confirmDeleteTitle": "ファイルを削除",
+    "confirmDeleteMessage": "\"{{filename}}\"を削除してもよろしいですか？この操作は取り消すことができません。",
+    "confirmClearTitle": "すべてのファイルを削除",
+    "confirmClearMessage": "すべての保存済みファイルを削除してもよろしいですか？この操作は取り消すことができません。",
+    "confirmOverwriteTitle": "ファイルを上書き",
+    "confirmOverwriteMessage": "\"{{filename}}\"という名前のファイルは既に存在します。上書きしますか？",
+    "confirmButton": "削除",
+    "cancelButton": "キャンセル",
+    "overwriteButton": "上書き",
+    "validation": {
+      "filenameRequired": "ファイル名と内容の両方を入力してください",
+      "fileSaved": "ファイル \"{{filename}}\" が正常に保存されました",
+      "fileLoaded": "ファイル \"{{filename}}\" が正常に読み込まれました",
+      "fileDeleted": "ファイル \"{{filename}}\" が正常に削除されました",
+      "allFilesCleared": "すべてのファイルが正常に削除されました",
+      "errorLoading": "保存済みファイルの読み込みエラー",
+      "errorSaving": "ファイルの保存エラー",
+      "errorLoadingFile": "ファイルの読み込みエラー",
+      "errorDeleting": "ファイルの削除エラー",
+      "errorClearing": "ファイルの削除エラー",
+      "dropboxUploadFailed": "ファイルはローカルに保存されましたが、Dropbox への同期に失敗しました: {{message}}",
+      "dropboxConnected": "Dropbox への接続が完了しました",
+      "dropboxDisconnected": "Dropbox との接続を解除しました",
+      "dropboxAuthFailed": "Dropbox の認証に失敗しました: {{message}}"
+    }
+  }
+}
